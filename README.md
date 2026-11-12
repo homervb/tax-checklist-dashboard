@@ -11,7 +11,7 @@ Staff upload ProSeries Client Checklist PDFs → the app extracts the client nam
 ## Features
 
 - **PDF ingest** — upload one or many ProSeries Client Checklist PDFs
-- **Defensive parsing** — raw text always saved; name + checklist items extracted heuristically; easy manual correction / re-parse
+- **Defensive parsing** — tries pdfplumber → PyMuPDF → pypdf, then OCR (Tesseract / RapidOCR); raw text + engine diagnostics always saved; easy manual correction / re-parse
 - **SQLite storage** — clients, checklist items, FRP uploaded-files log, settings
 - **File Request Pro sync** — on-demand pull of files/submissions; auto-match by name/email/filename keywords; unmatched queue for manual assign
 - **Dashboard** — searchable client table, % complete, missing highlight, per-client checklist with checkboxes, CSV missing report
@@ -48,6 +48,24 @@ Open the URL Streamlit prints (usually http://localhost:8501).
 - Generated demos land in `sample_pdfs/`
 - Or drop real ProSeries Client Checklist PDFs into `sample_pdfs/` / upload them in the UI
 - Uploaded originals are copied to `data/raw_pdfs/` so you can **re-parse** later
+
+### OCR / Streamlit Cloud
+
+Real ProSeries checklists are often **image-only** or have broken text encodings. The parser falls back to OCR.
+
+For [Streamlit Community Cloud](https://streamlit.io/cloud), this repo includes `packages.txt` so the cloud image installs:
+
+- `tesseract-ocr` + `tesseract-ocr-eng`
+- `poppler-utils` (for `pdf2image`)
+
+`rapidocr-onnxruntime` is also in `requirements.txt` as a pure-Python/ONNX OCR fallback when Tesseract isn’t available.
+
+Locally (Debian/Ubuntu):
+
+```bash
+sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+pip install -r requirements.txt
+```
 
 ---
 

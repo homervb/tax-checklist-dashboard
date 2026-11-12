@@ -1,0 +1,5 @@
+# System packages for Streamlit Community Cloud
+# Enables OCR of image-only / scanned ProSeries Client Checklist PDFs
+tesseract-ocr
+tesseract-ocr-eng
+poppler-utils

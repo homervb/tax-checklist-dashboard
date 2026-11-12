@@ -58,9 +58,22 @@ for f in uploaded:
             "client_name": result.client_name or Path(f.name).stem.replace("_", " "),
             "email": "",
             "items_text": "\n".join(result.items),
-            "raw_text": result.raw_text,
+            "raw_text": result.raw_text or result.diagnostics or "(no text)",
             "engine": result.engine,
             "warnings": result.warnings,
+            "image_only": result.image_only,
+            "encrypted": result.needs_password or result.encrypted,
+            "page_count": result.page_count,
+            "attempts": [
+                {
+                    "name": a.name,
+                    "ok": a.ok,
+                    "chars": a.chars,
+                    "error": a.error,
+                    "note": a.note,
+                }
+                for a in (result.attempts or [])
+            ],
         }
 
 st.divider()
@@ -78,7 +91,25 @@ for key in keys:
         if draft.get("warnings"):
             for w in draft["warnings"]:
                 st.warning(w)
-        st.caption(f"Extraction engine: `{draft.get('engine') or 'n/a'}`")
+        meta_bits = [
+            f"engine: `{draft.get('engine') or 'n/a'}`",
+            f"pages: {draft.get('page_count') or '?'}",
+        ]
+        if draft.get("image_only"):
+            meta_bits.append("image-only/scanned")
+        if draft.get("encrypted"):
+            meta_bits.append("encrypted")
+        st.caption(" · ".join(meta_bits))
+        if draft.get("attempts"):
+            with st.expander("Extraction engine attempts", expanded=False):
+                for a in draft["attempts"]:
+                    status = "OK" if a.get("ok") else ("error" if a.get("error") else "sparse")
+                    detail = a.get("error") or a.get("note") or ""
+                    st.write(
+                        f"- **{a.get('name')}** — {status}, "
+                        f"{a.get('chars', 0)} chars"
+                        + (f" ({detail})" if detail else "")
+                    )
 
         col1, col2 = st.columns(2)
         with col1:
@@ -101,11 +132,11 @@ for key in keys:
             key=f"items_{key}",
         )
 
-        with st.expander("Raw extracted text (always saved)"):
+        with st.expander("Raw extracted text + diagnostics (always saved)", expanded=True):
             st.text_area(
                 "Raw text",
                 value=draft["raw_text"] or "(empty)",
-                height=200,
+                height=280,
                 key=f"raw_{key}",
                 disabled=True,
             )
