@@ -1,5 +1,8 @@
-# System packages for Streamlit Community Cloud
-# Enables OCR of image-only / scanned ProSeries Client Checklist PDFs
+# System packages for Streamlit Community Cloud (apt).
+# Digital text extraction (pypdf / PyMuPDF / pdfplumber) does NOT require these.
+# They enable OCR fallbacks for image-only / scanned PDFs.
 tesseract-ocr
 tesseract-ocr-eng
 poppler-utils
+# Helps pikepdf on some images if the wheel cannot bundle libqpdf:
+qpdf

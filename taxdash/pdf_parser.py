@@ -22,17 +22,25 @@ from __future__ import annotations
 import io
 import re
 import shutil
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Optional, Union
 
 from taxdash.logging_config import setup_logging
+from taxdash.pdf_debug import (
+    format_debug_report,
+    probe_libraries,
+    probe_pdf_bytes,
+)
 
 logger = setup_logging()
 
 PathOrBuffer = Union[str, Path, BinaryIO]
 
-MIN_USEFUL_CHARS = 40
+# Soft threshold for "good enough" digital text. We still keep/return shorter
+# extracts so Cloud debugging can show partial recoveries.
+MIN_USEFUL_CHARS = 20
 
 # ---------------------------------------------------------------------------
 # ProSeries-aware patterns
@@ -142,6 +150,8 @@ class EngineAttempt:
     ok: bool = False
     error: str = ""
     note: str = ""
+    traceback: str = ""
+    preview: str = ""
 
 
 @dataclass
@@ -157,15 +167,24 @@ class ParseResult:
     image_only: bool = False
     page_count: int = 0
     diagnostics: str = ""
+    file_info: dict[str, Any] = field(default_factory=dict)
+    lib_info: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
 # Bytes helpers
 # ---------------------------------------------------------------------------
 
-def _as_bytes(source: PathOrBuffer) -> bytes:
+def _as_bytes(source: PathOrBuffer | bytes | bytearray) -> bytes:
+    """Normalize Path / file / raw bytes into PDF bytes (Streamlit uploader safe)."""
+    if isinstance(source, (bytes, bytearray)):
+        return bytes(source)
     if isinstance(source, (str, Path)):
         return Path(source).read_bytes()
+    # UploadedFile / BinaryIO
+    if hasattr(source, "getvalue"):
+        data = source.getvalue()
+        return bytes(data) if not isinstance(data, bytes) else data
     pos = source.tell() if hasattr(source, "tell") else None
     data = source.read()
     if hasattr(source, "seek") and pos is not None:
@@ -175,11 +194,15 @@ def _as_bytes(source: PathOrBuffer) -> bytes:
             pass
     if isinstance(data, bytes):
         return data
+    if isinstance(data, bytearray):
+        return bytes(data)
     return data.encode("utf-8", errors="ignore")
 
 
 def _with_text(attempt: EngineAttempt, text: str) -> EngineAttempt:
     attempt._text = text  # type: ignore[attr-defined]
+    attempt.chars = len(text or "")
+    attempt.preview = (text or "")[:180].replace("\n", "\\n")
     return attempt
 
 
@@ -187,12 +210,21 @@ def _text_of(attempt: EngineAttempt) -> str:
     return getattr(attempt, "_text", "") or ""
 
 
+def _fail(attempt: EngineAttempt, exc: BaseException, *, note: str = "") -> EngineAttempt:
+    attempt.error = f"{type(exc).__name__}: {exc}"
+    attempt.traceback = traceback.format_exc(limit=8)
+    if note:
+        attempt.note = note
+    logger.exception("%s failed: %s", attempt.name, exc)
+    return attempt
+
+
 def _is_useful(text: str) -> bool:
     cleaned = (text or "").strip()
     if len(cleaned) < MIN_USEFUL_CHARS:
         return False
     alnum = sum(ch.isalnum() or ch.isspace() for ch in cleaned)
-    return (alnum / max(len(cleaned), 1)) >= 0.45
+    return (alnum / max(len(cleaned), 1)) >= 0.35
 
 
 def _normalize_pdf_bytes(data: bytes) -> tuple[bytes, EngineAttempt]:
@@ -344,14 +376,11 @@ def _extract_pdfplumber(data: bytes) -> EngineAttempt:
                         text = "\n".join(lines)
                 pages.append(text)
         text = "\n".join(pages).strip()
-        attempt.chars = len(text)
         attempt.ok = _is_useful(text)
         attempt.note = "useful" if attempt.ok else "empty/sparse"
         return _with_text(attempt, text) if text else attempt
     except Exception as exc:
-        logger.exception("pdfplumber failed: %s", exc)
-        attempt.error = str(exc)
-        return attempt
+        return _fail(attempt, exc)
 
 
 def _extract_pymupdf(data: bytes) -> EngineAttempt:
@@ -422,7 +451,6 @@ def _extract_pymupdf(data: bytes) -> EngineAttempt:
                     text = (text + "\n" + "\n".join(extras)).strip()
                     attempt.note = f"widgets={len(widget_labels)}"
 
-            attempt.chars = len(text)
             attempt.ok = _is_useful(text)
             if not attempt.note:
                 attempt.note = "useful" if attempt.ok else "empty/sparse"
@@ -430,12 +458,11 @@ def _extract_pymupdf(data: bytes) -> EngineAttempt:
         finally:
             doc.close()
     except Exception as exc:
-        logger.exception("pymupdf failed: %s", exc)
-        attempt.error = str(exc)
-        return attempt
+        return _fail(attempt, exc)
 
 
 def _extract_pypdf(data: bytes) -> EngineAttempt:
+    """Lightweight digital extract — preferred first path on Streamlit Cloud."""
     attempt = EngineAttempt(name="pypdf")
     try:
         from pypdf import PdfReader
@@ -448,17 +475,22 @@ def _extract_pypdf(data: bytes) -> EngineAttempt:
         if getattr(reader, "is_encrypted", False):
             try:
                 reader.decrypt("")
-            except Exception:
-                attempt.error = "password-protected (cannot decrypt)"
+            except Exception as exc:
+                attempt.error = f"password-protected (cannot decrypt): {exc}"
                 attempt.note = "encrypted"
                 return attempt
 
         parts: list[str] = []
-        for page in reader.pages:
+        page_errors: list[str] = []
+        for idx, page in enumerate(reader.pages):
             try:
-                parts.append(page.extract_text() or "")
+                # extraction_mode='layout' helps some ProSeries exports on newer pypdf
+                try:
+                    parts.append(page.extract_text(extraction_mode="layout") or "")
+                except TypeError:
+                    parts.append(page.extract_text() or "")
             except Exception as page_exc:
-                logger.warning("pypdf page extract failed: %s", page_exc)
+                page_errors.append(f"page{idx}:{type(page_exc).__name__}:{page_exc}")
 
         # Form field names / tooltips
         try:
@@ -476,14 +508,65 @@ def _extract_pypdf(data: bytes) -> EngineAttempt:
             pass
 
         text = "\n".join(parts).strip()
-        attempt.chars = len(text)
+        attempt.ok = _is_useful(text)
+        attempt.note = (
+            f"pages={len(reader.pages)}; "
+            + ("useful" if attempt.ok else "empty/sparse")
+            + (f"; page_errors={page_errors[:3]}" if page_errors else "")
+        )
+        return _with_text(attempt, text) if text else attempt
+    except Exception as exc:
+        return _fail(attempt, exc)
+
+
+def _extract_pypdf2(data: bytes) -> EngineAttempt:
+    """Optional legacy PyPDF2 fallback (if installed)."""
+    attempt = EngineAttempt(name="PyPDF2")
+    try:
+        from PyPDF2 import PdfReader  # type: ignore
+    except ImportError as exc:
+        attempt.error = f"not installed: {exc}"
+        attempt.note = "optional"
+        return attempt
+
+    try:
+        reader = PdfReader(io.BytesIO(data), strict=False)
+        if getattr(reader, "is_encrypted", False):
+            try:
+                reader.decrypt("")
+            except Exception as exc:
+                attempt.error = f"password-protected: {exc}"
+                attempt.note = "encrypted"
+                return attempt
+        parts = []
+        for page in reader.pages:
+            try:
+                parts.append(page.extract_text() or "")
+            except Exception:
+                parts.append("")
+        text = "\n".join(parts).strip()
         attempt.ok = _is_useful(text)
         attempt.note = "useful" if attempt.ok else "empty/sparse"
         return _with_text(attempt, text) if text else attempt
     except Exception as exc:
-        logger.exception("pypdf failed: %s", exc)
-        attempt.error = str(exc)
+        return _fail(attempt, exc)
+
+
+def _extract_pdfminer(data: bytes) -> EngineAttempt:
+    attempt = EngineAttempt(name="pdfminer")
+    try:
+        from pdfminer.high_level import extract_text as pdfminer_extract
+    except ImportError as exc:
+        attempt.error = f"not installed: {exc}"
         return attempt
+
+    try:
+        text = (pdfminer_extract(io.BytesIO(data)) or "").strip()
+        attempt.ok = _is_useful(text)
+        attempt.note = "useful" if attempt.ok else "empty/sparse"
+        return _with_text(attempt, text) if text else attempt
+    except Exception as exc:
+        return _fail(attempt, exc)
 
 
 def _extract_pdfplumber_left_column(data: bytes) -> EngineAttempt:
@@ -680,13 +763,27 @@ def _ocr_rapidocr(data: bytes, *, max_pages: int = 6) -> EngineAttempt:
 # ---------------------------------------------------------------------------
 
 def extract_text(source: PathOrBuffer) -> tuple[str, str, list[EngineAttempt], dict[str, Any]]:
-    raw_data = _as_bytes(source)
+    """
+    Extract text from in-memory PDF bytes (no temp file required).
+
+    Order optimized for Streamlit Cloud:
+      1) pypdf on original bytes (lightest)
+      2) PyPDF2 / pdfminer / pymupdf / pdfplumber on original bytes
+      3) same engines on pikepdf-normalized bytes (if different)
+      4) OCR fallbacks
+    """
     attempts: list[EngineAttempt] = []
+    try:
+        raw_data = _as_bytes(source)
+    except Exception as exc:
+        attempts.append(_fail(EngineAttempt(name="read-bytes"), exc))
+        meta = {"needs_password": False, "page_count": 0, "image_only": False}
+        return "", "none", attempts, meta
 
-    data, norm_attempt = _normalize_pdf_bytes(raw_data)
-    attempts.append(norm_attempt)
+    meta = _inspect_pdf(raw_data)
+    meta["source_bytes"] = len(raw_data)
+    meta["pdf_header_ok"] = raw_data[:5] == b"%PDF-" if raw_data else False
 
-    meta = _inspect_pdf(data)
     if meta.get("needs_password"):
         attempts.append(
             EngineAttempt(
@@ -696,61 +793,74 @@ def extract_text(source: PathOrBuffer) -> tuple[str, str, list[EngineAttempt], d
                 note="encrypted",
             )
         )
-        return "", "none", attempts, meta
+        # Still try light extractors — some encrypted PDFs allow empty-user decrypt later
+        # but keep the warning.
 
     best_text = ""
     best_engine = "none"
     left_col_text = ""
 
-    # Prefer PyMuPDF first — it keeps left/right letterhead columns separated
-    # better than pdfplumber's default merge on ProSeries-style layouts.
-    for eng in (
-        _extract_pymupdf,
-        _extract_pdfplumber,
-        _extract_pypdf,
-        _extract_pdfplumber_left_column,
-    ):
-        attempt = eng(data)
+    def _consider(attempt: EngineAttempt, *, supplemental: bool = False) -> None:
+        nonlocal best_text, best_engine, left_col_text
         attempts.append(attempt)
         text = _text_of(attempt)
-        if attempt.name == "pdfplumber-left-col":
-            left_col_text = text
-            # Supplemental only — never the sole early-return source
-            continue
-        if attempt.ok and text:
-            # Attach left-column crop at top to help client-name detection
-            if left_col_text:
-                # Ensure left-col was collected; if this engine ran before left-col,
-                # we'll merge after the loop.
-                pass
+        if supplemental:
+            if text:
+                left_col_text = text
+            return
+        if not text:
+            return
+        # Prefer useful extracts; otherwise keep the longest partial text for debugging
+        if attempt.ok and (not _is_useful(best_text) or len(text) >= len(best_text)):
             best_text = text
             best_engine = attempt.name
-            break
-        if len(text) > len(best_text):
+        elif len(text) > len(best_text):
             best_text = text
-            best_engine = attempt.name if text else best_engine
+            best_engine = attempt.name
 
-    # Always gather left-column crop for client-name detection (top-left block).
-    # Do NOT merge it into the body text — that duplicates sections and pollutes items.
-    if not any(a.name == "pdfplumber-left-col" for a in attempts):
-        left_attempt = _extract_pdfplumber_left_column(data)
-        attempts.append(left_attempt)
-        left_col_text = _text_of(left_attempt)
-    else:
-        left_col_text = left_col_text or next(
-            (_text_of(a) for a in attempts if a.name == "pdfplumber-left-col"),
-            "",
-        )
+    # --- Pass A: original uploaded bytes (no temp file, no normalize) ---
+    # pypdf first — most reliable lightweight path on Streamlit Cloud.
+    for eng in (
+        _extract_pypdf,
+        _extract_pypdf2,
+        _extract_pdfminer,
+        _extract_pymupdf,
+        _extract_pdfplumber,
+    ):
+        _consider(eng(raw_data))
+        if _is_useful(best_text):
+            break
+
+    # Left-column crop for name detection (non-fatal)
+    _consider(_extract_pdfplumber_left_column(raw_data), supplemental=True)
     if left_col_text:
         meta["left_column_text"] = left_col_text
-
     if not best_text and left_col_text:
         best_text = left_col_text
         best_engine = "pdfplumber-left-col"
 
+    # --- Pass B: pikepdf-normalized copy if digital extract still weak ---
+    if not _is_useful(best_text):
+        normalized, norm_attempt = _normalize_pdf_bytes(raw_data)
+        attempts.append(norm_attempt)
+        if normalized and normalized != raw_data and norm_attempt.ok:
+            for eng in (
+                _extract_pypdf,
+                _extract_pymupdf,
+                _extract_pdfplumber,
+                _extract_pdfminer,
+            ):
+                # Tag attempts so debug output shows which byte source was used
+                attempt = eng(normalized)
+                attempt.name = f"{attempt.name}[normalized]"
+                _consider(attempt)
+                if _is_useful(best_text):
+                    break
+
     if _is_useful(best_text) and best_engine != "none":
         return best_text, best_engine, attempts, meta
 
+    # --- Pass C: OCR ---
     need_ocr = (not _is_useful(best_text)) or meta.get("image_only")
     if need_ocr:
         for eng in (
@@ -758,15 +868,11 @@ def extract_text(source: PathOrBuffer) -> tuple[str, str, list[EngineAttempt], d
             _ocr_pdf2image_tesseract,
             _ocr_rapidocr,
         ):
-            attempt = eng(data)
-            attempts.append(attempt)
-            text = _text_of(attempt)
-            if attempt.ok and text:
+            attempt = eng(raw_data)
+            _consider(attempt)
+            if attempt.ok and _text_of(attempt):
                 meta["image_only"] = meta.get("image_only") or True
-                return text, attempt.name, attempts, meta
-            if len(text) > len(best_text):
-                best_text = text
-                best_engine = attempt.name if text else best_engine
+                return _text_of(attempt), attempt.name, attempts, meta
 
     return best_text, (best_engine if best_text else "none"), attempts, meta
 
@@ -849,7 +955,17 @@ def parse_checklist_text(raw_text: str) -> ParseResult:
 
 
 def parse_pdf(source: PathOrBuffer, *, filename: str = "") -> ParseResult:
-    raw, engine, attempts, meta = extract_text(source)
+    # Capture bytes once for both extraction and Cloud debug probes
+    try:
+        data = _as_bytes(source)
+    except Exception as exc:
+        data = b""
+        logger.exception("Unable to read PDF bytes: %s", exc)
+
+    lib_info = probe_libraries()
+    file_info = probe_pdf_bytes(data, filename=filename)
+
+    raw, engine, attempts, meta = extract_text(data if data else source)
     result = parse_checklist_text(raw)
     result.engine = engine
     result.attempts = attempts
@@ -857,6 +973,8 @@ def parse_pdf(source: PathOrBuffer, *, filename: str = "") -> ParseResult:
     result.needs_password = bool(meta.get("needs_password"))
     result.image_only = bool(meta.get("image_only"))
     result.page_count = int(meta.get("page_count") or 0)
+    result.lib_info = lib_info
+    result.file_info = file_info
 
     # Prefer client name from the top-left crop (ProSeries: name left, firm right)
     left = (meta.get("left_column_text") or "").strip()
@@ -866,13 +984,31 @@ def parse_pdf(source: PathOrBuffer, *, filename: str = "") -> ParseResult:
         if left_name:
             result.client_name = left_name
 
-    result.diagnostics = _format_diagnostics(
+    # Full Cloud debug report (libs + file magic + per-engine errors + text)
+    result.diagnostics = format_debug_report(
+        file_info=file_info,
+        lib_info=lib_info,
+        attempts=attempts,
+        raw_text=raw,
+    )
+    # Keep a shorter classic header too for readability at the top
+    classic = _format_diagnostics(
         filename=filename,
         attempts=attempts,
         meta=meta,
         raw_text=raw,
     )
-    result.raw_text = result.diagnostics
+    result.raw_text = classic + "\n\n" + result.diagnostics
+
+    if not data:
+        result.warnings.append(
+            "Uploaded file bytes were empty — Streamlit did not provide PDF content."
+        )
+    elif not file_info.get("starts_with_pdf_header"):
+        result.warnings.append(
+            "File does not start with %PDF- magic bytes. The upload may be corrupt "
+            "or not a real PDF."
+        )
 
     if result.needs_password:
         result.warnings.append(
@@ -889,7 +1025,8 @@ def parse_pdf(source: PathOrBuffer, *, filename: str = "") -> ParseResult:
         else:
             result.warnings.append(
                 f"Failed to extract usable text from {filename or 'PDF'} with "
-                f"available engines (including OCR). See raw diagnostics below."
+                f"available engines (including OCR). Expand the debug panel below "
+                f"and share the output."
             )
     elif engine.startswith("ocr:"):
         result.warnings.append(

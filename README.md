@@ -49,21 +49,25 @@ Open the URL Streamlit prints (usually http://localhost:8501).
 - Or drop real ProSeries Client Checklist PDFs into `sample_pdfs/` / upload them in the UI
 - Uploaded originals are copied to `data/raw_pdfs/` so you can **re-parse** later
 
-### OCR / Streamlit Cloud
+### Streamlit Community Cloud
 
-Real ProSeries checklists are often **image-only** or have broken text encodings. The parser falls back to OCR.
+Text extraction runs **from uploaded bytes in memory** (pypdf → PyPDF2 → pdfminer → PyMuPDF → pdfplumber, then OCR).
 
-For [Streamlit Community Cloud](https://streamlit.io/cloud), this repo includes `packages.txt` so the cloud image installs:
+Repo root must include:
 
-- `tesseract-ocr` + `tesseract-ocr-eng`
-- `poppler-utils` (for `pdf2image`)
+| File | Purpose |
+|------|---------|
+| `requirements.txt` | Python deps (`pypdf`, `PyPDF2`, `pdfplumber`, `pymupdf`, …) |
+| `packages.txt` | Apt packages for OCR: `tesseract-ocr`, `tesseract-ocr-eng`, `poppler-utils`, `qpdf` |
 
-`rapidocr-onnxruntime` is also in `requirements.txt` as a pure-Python/ONNX OCR fallback when Tesseract isn’t available.
+After deploy, open **Upload PDFs → Environment / library debug** to confirm imports. If a real PDF fails, expand **Cloud extraction debug** and copy the dump (file magic, per-engine errors, previews).
 
-Locally (Debian/Ubuntu):
+**Password-protected emailed ProSeries PDFs:** unlock once, re-save, upload the unlocked copy.
+
+Local OCR deps (Debian/Ubuntu):
 
 ```bash
-sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+sudo apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils qpdf
 pip install -r requirements.txt
 ```
 
