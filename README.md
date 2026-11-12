@@ -11,7 +11,7 @@ Staff upload ProSeries Client Checklist PDFs → the app extracts the client nam
 ## Features
 
 - **PDF ingest** — upload one or many ProSeries Client Checklist PDFs
-- **Defensive parsing** — tries pdfplumber → PyMuPDF → pypdf, then OCR (Tesseract / RapidOCR); raw text + engine diagnostics always saved; easy manual correction / re-parse
+- **Defensive parsing** — pikepdf normalize → PyMuPDF → pdfplumber → pypdf, then OCR (Tesseract / RapidOCR); ProSeries-aware sections (`Tax Documents:`, `Additional paperwork:`); top-left client name; raw text + engine diagnostics always saved
 - **SQLite storage** — clients, checklist items, FRP uploaded-files log, settings
 - **File Request Pro sync** — on-demand pull of files/submissions; auto-match by name/email/filename keywords; unmatched queue for manual assign
 - **Dashboard** — searchable client table, % complete, missing highlight, per-client checklist with checkboxes, CSV missing report

@@ -16,34 +16,46 @@ from taxdash.pdf_parser import (  # noqa: E402
 
 
 SAMPLE = """
-ProSeries Professional — Client Checklist
-Tax Year 2025
+Michael Orlando
+123 Palm Ave
+Orlando, FL 32801
+Homer VB Tax & Accounting
+456 Firm Street, Suite 200
 
-Client Name: Jordan Lee
-Email: jordan.lee@example.com
+Please gather the following documents so we can prepare your income tax return.
+Bring originals or clear copies. Long explanatory paragraphs like this one should
+not be captured as checklist items by the parser.
 
-Documents Needed:
+Tax Documents:
+□ W-2 wage statements from all employers
+□ 1099-INT interest income statements
+□ 1099-DIV dividend statements
+□ 1099-B brokerage / stock sale statements
+□ Form 1095-A health insurance marketplace statement
+□ Property tax bills for real estate owned
 
-• 2025 Form W-2 from Northwind Traders
-• 1099-INT from First National Bank
-• 1099-B brokerage statement (cost basis)
-• Property tax bill for primary residence
-• Charitable donation receipts
-• Health insurance Form 1095-A
+Additional paperwork:
+□ Copy of driver's license (taxpayer and spouse)
+□ Voided check for direct deposit
+□ Prior-year federal and state tax returns
+□ Charitable contribution receipts
 
-Please provide the items listed above.
-Thank you.
+Thank you for your prompt attention. If you have questions, please call our office.
+
+Homer VB Tax & Accounting
 """
 
 
-def test_parse_client_name_and_items():
+def test_parse_proseries_structure():
     result = parse_checklist_text(SAMPLE)
-    assert result.client_name == "Jordan Lee"
-    assert len(result.items) >= 5
+    assert result.client_name == "Michael Orlando"
+    assert len(result.items) >= 8
     joined = " ".join(result.items).lower()
-    assert "w-2" in joined or "w2" in joined
-    assert "1099" in joined
-    assert result.raw_text
+    assert "w-2" in joined
+    assert "additional" not in joined  # section header not an item
+    assert "thank you" not in joined
+    # Long intro paragraph should not become an item
+    assert not any("long explanatory paragraphs" in i.lower() for i in result.items)
 
 
 def test_items_from_multiline():
@@ -58,36 +70,39 @@ def test_empty_text_warns():
     assert result.items == []
 
 
-def test_digital_pdf_still_works():
-    path = ROOT / "sample_pdfs" / "jordan_lee_checklist.pdf"
+def test_digital_proseries_pdf():
+    path = ROOT / "sample_pdfs" / "michael_orlando_checklist.pdf"
     assert path.exists(), "run scripts/make_sample_pdf.py first"
     result = parse_pdf(path, filename=path.name)
-    assert result.client_name == "Jordan Lee"
-    assert len(result.items) >= 5
-    assert result.engine in {"pdfplumber", "pymupdf", "pypdf"}
+    assert result.client_name == "Michael Orlando"
+    assert len(result.items) >= 8
+    assert "Tax Documents" not in " ".join(result.items)
     assert "=== PDF extraction diagnostics ===" in result.raw_text
     assert "=== extracted text below ===" in result.raw_text
 
 
-def test_image_only_pdf_uses_ocr():
-    path = ROOT / "sample_pdfs" / "jordan_lee_image_only.pdf"
+def test_image_only_proseries_pdf_ocr():
+    path = ROOT / "sample_pdfs" / "michael_orlando_image_only.pdf"
     if not path.exists():
         print("SKIP image-only OCR test (sample missing)")
         return
     result = parse_pdf(path, filename=path.name)
-    # OCR should recover something useful on our synthetic sample
-    assert result.engine.startswith("ocr:") or len(result.raw_text) > 50
+    assert result.attempts
     assert "=== PDF extraction diagnostics ===" in result.raw_text
-    assert result.attempts, "expected engine attempt log"
-    # Prefer recovering the client name when OCR works
     body = result.raw_text.split("=== extracted text below ===", 1)[-1]
-    assert "Jordan" in body or result.client_name or result.warnings
+    # OCR should recover name and/or document keywords
+    assert (
+        result.client_name == "Michael Orlando"
+        or "Michael" in body
+        or "W-2" in body
+        or "1099" in body
+    )
 
 
 if __name__ == "__main__":
-    test_parse_client_name_and_items()
+    test_parse_proseries_structure()
     test_items_from_multiline()
     test_empty_text_warns()
-    test_digital_pdf_still_works()
-    test_image_only_pdf_uses_ocr()
+    test_digital_proseries_pdf()
+    test_image_only_proseries_pdf_ocr()
     print("OK")
