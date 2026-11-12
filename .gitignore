@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+.env.local
+
+# App data (keep folder, ignore DB and uploads)
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/uploads/
+data/raw_pdfs/
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Test / temp
+.pytest_cache/
+.coverage
+htmlcov/
+tmp/
+*.pdf
+!sample_pdfs/**/*.pdf
