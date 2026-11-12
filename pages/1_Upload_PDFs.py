@@ -8,7 +8,8 @@ import streamlit as st
 
 from taxdash import db
 from taxdash.pdf_debug import probe_libraries
-from taxdash.pdf_parser import items_from_multiline, parse_pdf
+from taxdash.pdf_parser import items_from_multiline
+from taxdash.streamlit_extract import extract_and_parse_upload
 from taxdash.ui import bootstrap, inject_styles, select_client
 
 st.set_page_config(page_title="Upload PDFs", page_icon="📤", layout="wide")
@@ -17,14 +18,13 @@ inject_styles()
 
 st.title("Upload ProSeries PDFs")
 st.caption(
-    "Drop one or more Client Checklist PDFs. We extract the client name and "
-    "requested documents, save the raw text, and let you correct anything before saving."
+    "Drop one or more Client Checklist PDFs. Extraction reads Streamlit upload "
+    "bytes via seek(0)/getvalue(), then tries pypdf → pdfplumber → pymupdf."
 )
 
-# Always-visible environment probe (helps Streamlit Cloud debugging)
 with st.expander("Environment / library debug (Streamlit Cloud)", expanded=False):
     libs = probe_libraries()
-    st.write(
+    st.json(
         {
             "python": libs.get("python"),
             "platform": libs.get("platform"),
@@ -32,11 +32,6 @@ with st.expander("Environment / library debug (Streamlit Cloud)", expanded=False
             "imports": libs.get("imports"),
             "binaries": libs.get("binaries"),
         }
-    )
-    st.caption(
-        "On Streamlit Community Cloud, `packages.txt` should install "
-        "`tesseract-ocr`, `tesseract-ocr-eng`, and `poppler-utils`. "
-        "Digital text extraction uses pypdf / PyMuPDF / pdfplumber and does not need those."
     )
 
 UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "raw_pdfs"
@@ -50,8 +45,8 @@ uploaded = st.file_uploader(
 
 if not uploaded:
     st.info(
-        "Tip: place sample PDFs in `sample_pdfs/` for reference. "
-        "You can also generate a demo PDF with `python scripts/make_sample_pdf.py`."
+        "Tip: sample PDFs live in `sample_pdfs/`. "
+        "Generate with `python scripts/make_sample_pdf.py`."
     )
     st.stop()
 
@@ -59,160 +54,147 @@ if "parse_drafts" not in st.session_state:
     st.session_state["parse_drafts"] = {}
 
 
-def _draft_from_result(filename: str, data: bytes, result, saved_path: str) -> dict:
+def _run_extract(uploaded_file) -> dict:
+    """Extract from a Streamlit UploadedFile using the Cloud-safe path."""
+    # Explicit seek before anything else (as requested)
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+
+    filename = getattr(uploaded_file, "name", "upload.pdf")
+    result = extract_and_parse_upload(uploaded_file, filename=filename)
+
+    # Also keep a raw copy on disk for re-parse
+    saved_path = ""
+    try:
+        # Re-seek / getvalue for saving
+        try:
+            uploaded_file.seek(0)
+        except Exception:
+            pass
+        data = (
+            uploaded_file.getvalue()
+            if hasattr(uploaded_file, "getvalue")
+            else uploaded_file.read()
+        )
+        data = bytes(data or b"")
+        dest = UPLOAD_DIR / Path(filename).name
+        dest.write_bytes(data)
+        saved_path = str(dest)
+    except Exception as exc:
+        st.warning(f"Could not cache PDF to disk: {exc}")
+
+    parse = result.parse
     return {
         "filename": filename,
         "saved_path": saved_path,
-        "byte_length": len(data),
-        "client_name": result.client_name or Path(filename).stem.replace("_", " "),
+        "byte_length": result.byte_length,
+        "magic_ascii": result.magic_ascii,
+        "magic_hex": result.magic_hex,
+        "starts_with_pdf_header": result.starts_with_pdf_header,
+        "client_name": parse.client_name or Path(filename).stem.replace("_", " "),
         "email": "",
-        "items_text": "\n".join(result.items),
-        "raw_text": result.raw_text or result.diagnostics or "(no text)",
+        "items_text": "\n".join(parse.items),
+        "raw_text": result.raw_text,
+        "debug_report": result.debug_report,
         "engine": result.engine,
         "warnings": result.warnings,
-        "image_only": result.image_only,
-        "encrypted": result.needs_password or result.encrypted,
-        "page_count": result.page_count,
-        "file_info": result.file_info,
-        "lib_info": result.lib_info,
         "attempts": [
             {
                 "name": a.name,
                 "ok": a.ok,
                 "chars": a.chars,
+                "text": a.text,
                 "error": a.error,
+                "traceback": a.traceback,
                 "note": a.note,
-                "traceback": getattr(a, "traceback", "") or "",
-                "preview": getattr(a, "preview", "") or "",
             }
-            for a in (result.attempts or [])
+            for a in result.attempts
         ],
     }
 
 
-# Parse newly uploaded files from in-memory bytes (no temp-file dependency)
+# Parse each upload once (keyed by name+size)
 for f in uploaded:
     key = f"{f.name}:{f.size}"
     if key not in st.session_state["parse_drafts"]:
-        data = f.getvalue()
-        st.caption(f"Read `{f.name}` from uploader: **{len(data):,}** bytes")
-        safe_name = Path(f.name).name
-        dest = UPLOAD_DIR / safe_name
         try:
-            dest.write_bytes(data)
-        except OSError as exc:
-            st.warning(f"Could not save a local copy of {safe_name}: {exc}")
-            dest = Path("")  # extraction still uses in-memory bytes
-
-        try:
-            result = parse_pdf(data, filename=f.name)
+            st.session_state["parse_drafts"][key] = _run_extract(f)
         except Exception as exc:
             st.exception(exc)
             st.session_state["parse_drafts"][key] = {
                 "filename": f.name,
-                "saved_path": str(dest),
-                "byte_length": len(data),
+                "saved_path": "",
+                "byte_length": getattr(f, "size", 0),
                 "client_name": Path(f.name).stem.replace("_", " "),
                 "email": "",
                 "items_text": "",
-                "raw_text": f"TOP-LEVEL PARSE ERROR: {type(exc).__name__}: {exc}",
+                "raw_text": "",
+                "debug_report": f"TOP-LEVEL ERROR: {type(exc).__name__}: {exc}",
                 "engine": "none",
-                "warnings": [f"parse_pdf crashed: {exc}"],
-                "image_only": False,
-                "encrypted": False,
-                "page_count": 0,
-                "file_info": {"byte_length": len(data)},
-                "lib_info": probe_libraries(),
+                "warnings": [str(exc)],
                 "attempts": [],
             }
-            continue
-
-        st.session_state["parse_drafts"][key] = _draft_from_result(
-            f.name, data, result, str(dest)
-        )
 
 st.divider()
 st.subheader("Review extracted data")
 
-drafts = st.session_state["parse_drafts"]
-keys = [f"{f.name}:{f.size}" for f in uploaded]
-
-for key in keys:
-    draft = drafts.get(key)
+for f in uploaded:
+    key = f"{f.name}:{f.size}"
+    draft = st.session_state["parse_drafts"].get(key)
     if not draft:
         continue
 
-    failed = (draft.get("engine") in (None, "", "none")) and not (
-        draft.get("items_text") or ""
-    ).strip()
+    failed = not (draft.get("raw_text") or "").strip()
 
     with st.expander(f"📄 {draft['filename']}", expanded=True):
-        if draft.get("warnings"):
-            for w in draft["warnings"]:
-                st.warning(w)
-        meta_bits = [
-            f"engine: `{draft.get('engine') or 'n/a'}`",
-            f"pages: {draft.get('page_count') or '?'}",
-            f"upload bytes: {draft.get('byte_length', '?')}",
-        ]
-        if draft.get("image_only"):
-            meta_bits.append("image-only/scanned")
-        if draft.get("encrypted"):
-            meta_bits.append("encrypted")
-        st.caption(" · ".join(meta_bits))
+        for w in draft.get("warnings") or []:
+            st.warning(w)
 
-        # Prominent debug when extraction failed (or always available)
-        with st.expander(
-            "Cloud extraction debug (copy/paste this back)",
-            expanded=failed,
-        ):
-            fi = draft.get("file_info") or {}
-            st.markdown("**Uploaded file probe**")
-            st.code(
-                "\n".join(
-                    [
-                        f"filename: {fi.get('filename', draft.get('filename'))}",
-                        f"byte_length: {fi.get('byte_length', draft.get('byte_length'))}",
-                        f"starts_with_pdf_header: {fi.get('starts_with_pdf_header')}",
-                        f"contains_eof: {fi.get('contains_eof')}",
-                        f"magic_ascii: {fi.get('magic_ascii')}",
-                        f"magic_hex: {fi.get('magic_hex')}",
-                        f"quick_open: {fi.get('quick_open')}",
-                    ]
-                ),
-                language="text",
-            )
-            st.markdown("**Per-engine attempts**")
-            if draft.get("attempts"):
-                for a in draft["attempts"]:
-                    status = "OK" if a.get("ok") else ("ERR" if a.get("error") else "sparse")
-                    st.markdown(
-                        f"- **{a.get('name')}** — `{status}`, chars={a.get('chars', 0)}"
-                    )
-                    if a.get("note"):
-                        st.caption(f"note: {a['note']}")
-                    if a.get("error"):
-                        st.error(a["error"])
-                    if a.get("preview"):
-                        st.caption(f"preview: {a['preview']}")
-                    if a.get("traceback"):
-                        st.code(a["traceback"], language="text")
-            else:
-                st.write("No attempts recorded.")
+        st.caption(
+            f"engine: `{draft.get('engine')}` · "
+            f"bytes: {draft.get('byte_length', '?')} · "
+            f"pdf_header: {draft.get('starts_with_pdf_header')} · "
+            f"magic: `{draft.get('magic_ascii')}`"
+        )
 
-            st.markdown("**Full debug dump**")
+        # ---- Per-library attempt results (always shown) ----
+        st.markdown("#### Extraction attempts (copy this if it still fails)")
+        attempts = draft.get("attempts") or []
+        if not attempts:
+            st.error("No library attempts were recorded.")
+        for a in attempts:
+            status = "✅ OK" if a.get("ok") else ("❌ ERR" if a.get("error") else "⚪ EMPTY")
+            with st.container(border=True):
+                st.markdown(f"**{a.get('name')}** — {status} — {a.get('chars', 0)} chars")
+                if a.get("note"):
+                    st.caption(a["note"])
+                if a.get("error"):
+                    st.error(a["error"])
+                if a.get("traceback"):
+                    st.code(a["traceback"], language="text")
+                st.text_area(
+                    f"Raw text from {a.get('name')}",
+                    value=a.get("text") or "(empty)",
+                    height=140,
+                    key=f"attempt_text_{key}_{a.get('name')}",
+                )
+
+        with st.expander("Full debug dump", expanded=failed):
             st.text_area(
-                "debug_dump",
-                value=draft.get("raw_text") or "(empty)",
-                height=320,
-                key=f"debug_dump_{key}",
+                "debug",
+                value=draft.get("debug_report") or draft.get("raw_text") or "(empty)",
+                height=280,
+                key=f"debug_{key}",
             )
 
+        st.markdown("#### Parsed fields (editable)")
         col1, col2 = st.columns(2)
         with col1:
             draft["client_name"] = st.text_input(
                 "Client name",
-                value=draft["client_name"],
+                value=draft.get("client_name") or "",
                 key=f"name_{key}",
             )
         with col2:
@@ -223,48 +205,48 @@ for key in keys:
             )
 
         draft["items_text"] = st.text_area(
-            "Checklist items (one per line — edit freely)",
-            value=draft["items_text"],
+            "Checklist items (from Tax Documents: / Additional paperwork:)",
+            value=draft.get("items_text") or "",
             height=220,
             key=f"items_{key}",
         )
 
-        with st.expander("Raw extracted text + diagnostics (always saved)", expanded=not failed):
-            st.text_area(
-                "Raw text",
-                value=draft["raw_text"] or "(empty)",
-                height=280,
-                key=f"raw_{key}",
-                disabled=True,
-            )
-
         b1, b2, b3 = st.columns([1, 1, 2])
         with b1:
-            if st.button("Re-parse PDF", key=f"reparse_{key}"):
-                # Prefer in-memory re-read from saved bytes; fall back to path
-                path = Path(draft["saved_path"]) if draft.get("saved_path") else None
+            if st.button("Re-parse upload", key=f"reparse_{key}"):
+                # Re-run against the same UploadedFile in this request if possible,
+                # else from cached disk bytes.
                 try:
-                    if path and path.exists():
-                        data = path.read_bytes()
+                    # Force a fresh extract from the live uploader object
+                    for uf in uploaded:
+                        if f"{uf.name}:{uf.size}" == key:
+                            st.session_state["parse_drafts"][key] = _run_extract(uf)
+                            break
                     else:
-                        st.error("Saved PDF copy not found; re-upload the file.")
-                        data = b""
-                    if data:
-                        result = parse_pdf(data, filename=draft["filename"])
-                        st.session_state["parse_drafts"][key] = _draft_from_result(
-                            draft["filename"], data, result, str(path or "")
-                        )
-                        st.rerun()
+                        path = Path(draft.get("saved_path") or "")
+                        if path.exists():
+                            st.session_state["parse_drafts"][key] = _run_extract(
+                                path.read_bytes()
+                            )
+                            st.session_state["parse_drafts"][key]["filename"] = draft[
+                                "filename"
+                            ]
+                            st.session_state["parse_drafts"][key]["saved_path"] = str(
+                                path
+                            )
+                        else:
+                            st.error("Could not re-parse — re-upload the PDF.")
+                    st.rerun()
                 except Exception as exc:
                     st.exception(exc)
         with b2:
             save = st.button("Save client", type="primary", key=f"save_{key}")
         with b3:
-            st.caption("Saving creates a client record + checklist items in SQLite.")
+            st.caption("Saves client + checklist items to SQLite.")
 
         if save:
-            name = (draft["client_name"] or "").strip()
-            items = items_from_multiline(draft["items_text"])
+            name = (draft.get("client_name") or "").strip()
+            items = items_from_multiline(draft.get("items_text") or "")
             if not name:
                 st.error("Client name is required.")
             else:
@@ -272,10 +254,14 @@ for key in keys:
                     name,
                     email=draft.get("email") or None,
                     source_filename=draft["filename"],
-                    raw_pdf_text=draft.get("raw_text") or "",
+                    raw_pdf_text=draft.get("debug_report")
+                    or draft.get("raw_text")
+                    or "",
                     items=items,
                 )
-                st.success(f"Saved **{name}** with {len(items)} item(s) (client #{client_id}).")
+                st.success(
+                    f"Saved **{name}** with {len(items)} item(s) (client #{client_id})."
+                )
                 select_client(client_id)
                 if st.button("Open client detail", key=f"open_{key}"):
                     st.switch_page("pages/2_Client_Detail.py")

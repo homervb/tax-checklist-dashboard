@@ -1,8 +1,7 @@
-# System packages for Streamlit Community Cloud (apt).
-# Digital text extraction (pypdf / PyMuPDF / pdfplumber) does NOT require these.
-# They enable OCR fallbacks for image-only / scanned PDFs.
+# Apt packages for Streamlit Community Cloud
+# Not required for digital text extraction (pypdf/pdfplumber/pymupdf).
+# Required only if OCR fallback is used for scanned/image-only PDFs.
 tesseract-ocr
 tesseract-ocr-eng
 poppler-utils
-# Helps pikepdf on some images if the wheel cannot bundle libqpdf:
 qpdf
