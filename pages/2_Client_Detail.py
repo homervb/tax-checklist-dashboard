@@ -5,7 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from taxdash import db
-from taxdash.pdf_parser import items_from_multiline, parse_checklist_text
+from taxdash.checklist_parser import items_from_multiline, parse_checklist_text
 from taxdash.ui import bootstrap, get_selected_client_id, inject_styles, select_client
 
 st.set_page_config(page_title="Client Detail", page_icon="👤", layout="wide")

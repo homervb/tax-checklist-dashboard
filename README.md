@@ -31,6 +31,14 @@ streamlit run app.py
 
 Open the URL Streamlit prints (usually http://localhost:8501).
 
+`requirements.txt` is intentionally minimal for Streamlit Community Cloud:
+
+```
+streamlit
+requests
+python-dotenv
+```
+
 ### Typical workflow
 
 1. Open a ProSeries Client Checklist PDF on your computer
@@ -76,7 +84,7 @@ pages/
   5_Settings.py             # FRP API token
 taxdash/
   db.py                     # SQLite schema + CRUD
-  pdf_parser.py             # Text parsing (ProSeries sections)
+  checklist_parser.py       # Paste-text parsing (ProSeries sections)
   frp_client.py / sync.py / matching.py
 data/                       # SQLite DB (gitignored contents)
 ```

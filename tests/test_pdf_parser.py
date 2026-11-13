@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from taxdash.pdf_parser import items_from_multiline, parse_checklist_text  # noqa: E402
+from taxdash.checklist_parser import items_from_multiline, parse_checklist_text  # noqa: E402
 
 
 SAMPLE = """
@@ -48,7 +48,7 @@ def test_parse_proseries_structure():
     assert len(result.items) >= 8
     joined = " ".join(result.items).lower()
     assert "w-2" in joined
-    assert "additional" not in joined  # section header not an item
+    assert "additional" not in joined
     assert "thank you" not in joined
     assert not any("long explanatory paragraphs" in i.lower() for i in result.items)
 

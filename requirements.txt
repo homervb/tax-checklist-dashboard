@@ -1,4 +1,5 @@
-streamlit>=1.32.0
-requests>=2.31.0
-python-dotenv>=1.0.0
-pandas>=2.1.0
+# Minimal deps for Streamlit Community Cloud (paste-based checklist app).
+# Keep this list short — no PDF/OCR system libraries required.
+streamlit
+requests
+python-dotenv
