@@ -1,2 +1,0 @@
-# No system packages required for the paste-based checklist workflow.
-# (Left in place so Streamlit Cloud has a valid packages.txt if configured.)
