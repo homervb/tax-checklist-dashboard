@@ -1,7 +1,2 @@
-# Apt packages for Streamlit Community Cloud
-# Not required for digital text extraction (pypdf/pdfplumber/pymupdf).
-# Required only if OCR fallback is used for scanned/image-only PDFs.
-tesseract-ocr
-tesseract-ocr-eng
-poppler-utils
-qpdf
+# No system packages required for the paste-based checklist workflow.
+# (Left in place so Streamlit Cloud has a valid packages.txt if configured.)

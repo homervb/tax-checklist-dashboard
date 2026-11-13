@@ -1,4 +1,4 @@
-"""Unit tests for ProSeries checklist text parsing (no Streamlit required)."""
+"""Unit tests for ProSeries checklist text parsing (paste workflow)."""
 
 from __future__ import annotations
 
@@ -8,11 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from taxdash.pdf_parser import (  # noqa: E402
-    items_from_multiline,
-    parse_checklist_text,
-    parse_pdf,
-)
+from taxdash.pdf_parser import items_from_multiline, parse_checklist_text  # noqa: E402
 
 
 SAMPLE = """
@@ -54,7 +50,6 @@ def test_parse_proseries_structure():
     assert "w-2" in joined
     assert "additional" not in joined  # section header not an item
     assert "thank you" not in joined
-    # Long intro paragraph should not become an item
     assert not any("long explanatory paragraphs" in i.lower() for i in result.items)
 
 
@@ -70,39 +65,8 @@ def test_empty_text_warns():
     assert result.items == []
 
 
-def test_digital_proseries_pdf():
-    path = ROOT / "sample_pdfs" / "michael_orlando_checklist.pdf"
-    assert path.exists(), "run scripts/make_sample_pdf.py first"
-    result = parse_pdf(path, filename=path.name)
-    assert result.client_name == "Michael Orlando"
-    assert len(result.items) >= 8
-    assert "Tax Documents" not in " ".join(result.items)
-    assert "=== PDF extraction diagnostics ===" in result.raw_text
-    assert "=== extracted text below ===" in result.raw_text
-
-
-def test_image_only_proseries_pdf_ocr():
-    path = ROOT / "sample_pdfs" / "michael_orlando_image_only.pdf"
-    if not path.exists():
-        print("SKIP image-only OCR test (sample missing)")
-        return
-    result = parse_pdf(path, filename=path.name)
-    assert result.attempts
-    assert "=== PDF extraction diagnostics ===" in result.raw_text
-    body = result.raw_text.split("=== extracted text below ===", 1)[-1]
-    # OCR should recover name and/or document keywords
-    assert (
-        result.client_name == "Michael Orlando"
-        or "Michael" in body
-        or "W-2" in body
-        or "1099" in body
-    )
-
-
 if __name__ == "__main__":
     test_parse_proseries_structure()
     test_items_from_multiline()
     test_empty_text_warns()
-    test_digital_proseries_pdf()
-    test_image_only_proseries_pdf_ocr()
     print("OK")
