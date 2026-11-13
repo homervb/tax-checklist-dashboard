@@ -1,4 +1,4 @@
-"""Unit tests for ProSeries checklist text parsing (no Streamlit required)."""
+"""Unit tests for ProSeries checklist text parsing (paste workflow)."""
 
 from __future__ import annotations
 
@@ -12,34 +12,45 @@ from taxdash.pdf_parser import items_from_multiline, parse_checklist_text  # noq
 
 
 SAMPLE = """
-ProSeries Professional — Client Checklist
-Tax Year 2025
+Michael Orlando
+123 Palm Ave
+Orlando, FL 32801
+Homer VB Tax & Accounting
+456 Firm Street, Suite 200
 
-Client Name: Jordan Lee
-Email: jordan.lee@example.com
+Please gather the following documents so we can prepare your income tax return.
+Bring originals or clear copies. Long explanatory paragraphs like this one should
+not be captured as checklist items by the parser.
 
-Documents Needed:
+Tax Documents:
+□ W-2 wage statements from all employers
+□ 1099-INT interest income statements
+□ 1099-DIV dividend statements
+□ 1099-B brokerage / stock sale statements
+□ Form 1095-A health insurance marketplace statement
+□ Property tax bills for real estate owned
 
-• 2025 Form W-2 from Northwind Traders
-• 1099-INT from First National Bank
-• 1099-B brokerage statement (cost basis)
-• Property tax bill for primary residence
-• Charitable donation receipts
-• Health insurance Form 1095-A
+Additional paperwork:
+□ Copy of driver's license (taxpayer and spouse)
+□ Voided check for direct deposit
+□ Prior-year federal and state tax returns
+□ Charitable contribution receipts
 
-Please provide the items listed above.
-Thank you.
+Thank you for your prompt attention. If you have questions, please call our office.
+
+Homer VB Tax & Accounting
 """
 
 
-def test_parse_client_name_and_items():
+def test_parse_proseries_structure():
     result = parse_checklist_text(SAMPLE)
-    assert result.client_name == "Jordan Lee"
-    assert len(result.items) >= 5
+    assert result.client_name == "Michael Orlando"
+    assert len(result.items) >= 8
     joined = " ".join(result.items).lower()
-    assert "w-2" in joined or "w2" in joined
-    assert "1099" in joined
-    assert result.raw_text
+    assert "w-2" in joined
+    assert "additional" not in joined  # section header not an item
+    assert "thank you" not in joined
+    assert not any("long explanatory paragraphs" in i.lower() for i in result.items)
 
 
 def test_items_from_multiline():
@@ -55,7 +66,7 @@ def test_empty_text_warns():
 
 
 if __name__ == "__main__":
-    test_parse_client_name_and_items()
+    test_parse_proseries_structure()
     test_items_from_multiline()
     test_empty_text_warns()
     print("OK")

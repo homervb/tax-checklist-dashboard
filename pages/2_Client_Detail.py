@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import streamlit as st
 
 from taxdash import db
-from taxdash.pdf_parser import items_from_multiline, parse_pdf
+from taxdash.pdf_parser import items_from_multiline, parse_checklist_text
 from taxdash.ui import bootstrap, get_selected_client_id, inject_styles, select_client
 
 st.set_page_config(page_title="Client Detail", page_icon="👤", layout="wide")
@@ -18,7 +16,7 @@ st.title("Client detail")
 
 clients = db.list_clients()
 if not clients:
-    st.info("No clients yet. Upload a PDF first.")
+    st.info("No clients yet. Paste a checklist from **Paste checklist text**.")
     st.stop()
 
 selected_id = get_selected_client_id()
@@ -82,7 +80,7 @@ def _on_toggle_received(item_id: int, key: str) -> None:
 
 
 if not items:
-    st.info("No checklist items. Add some below or re-parse the source PDF.")
+    st.info("No checklist items. Add some below or re-extract from stored pasted text.")
 else:
     for item in items:
         item_id = int(item["id"])
@@ -173,8 +171,8 @@ else:
         hide_index=True,
     )
 
-# --- Re-parse / edit items bulk ---
-st.subheader("Edit extracted checklist / re-parse")
+# --- Edit items / re-extract from stored pasted text ---
+st.subheader("Edit checklist")
 items_text = "\n".join(i["description"] for i in items)
 edited = st.text_area(
     "Checklist items (one per line). Saving replaces the list; received status is kept for matching descriptions.",
@@ -192,28 +190,22 @@ with c1:
         st.success("Checklist updated.")
         st.rerun()
 with c2:
-    source = client.get("source_filename") or ""
-    raw_path = Path(__file__).resolve().parent.parent / "data" / "raw_pdfs" / Path(source).name
-    if source and raw_path.exists():
-        if st.button("Re-parse source PDF"):
-            result = parse_pdf(raw_path, filename=source)
-            db.update_client(client_id, raw_pdf_text=result.raw_text)
-            if result.client_name:
-                db.update_client(client_id, name=result.client_name)
-            db.replace_checklist_items(
-                client_id,
-                result.items,
-                source_pdf=source,
-            )
-            st.success(
-                f"Re-parsed via {result.engine}: "
-                f"{len(result.items)} item(s). Review and edit if needed."
-            )
-            st.rerun()
-    else:
-        st.caption("No local source PDF on file for re-parse.")
+    raw_stored = (client.get("raw_pdf_text") or "").strip()
+    if raw_stored and st.button("Re-extract from stored pasted text"):
+        result = parse_checklist_text(raw_stored)
+        if result.client_name:
+            db.update_client(client_id, name=result.client_name)
+        db.replace_checklist_items(
+            client_id,
+            result.items,
+            source_pdf=client.get("source_filename") or "pasted-checklist-text",
+        )
+        st.success(f"Re-extracted {len(result.items)} item(s). Review and edit if needed.")
+        st.rerun()
+    elif not raw_stored:
+        st.caption("No stored pasted text on this client.")
 
-with st.expander("Raw PDF text"):
+with st.expander("Stored pasted checklist text"):
     st.text_area(
         "Raw text",
         value=client.get("raw_pdf_text") or "(none)",

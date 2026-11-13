@@ -47,7 +47,7 @@ with st.sidebar:
             except Exception as exc:
                 st.error(f"Unexpected sync error: {exc}")
 
-    st.page_link("pages/1_Upload_PDFs.py", label="Upload ProSeries PDFs", icon="📤")
+    st.page_link("pages/1_Paste_Checklist.py", label="Paste checklist text", icon="📋")
     st.page_link("pages/3_Unmatched_Files.py", label="Unmatched FRP files", icon="🔗")
     st.page_link("pages/4_Missing_Report.py", label="Missing documents report", icon="📝")
     st.page_link("pages/5_Settings.py", label="Settings / API token", icon="⚙️")
@@ -81,7 +81,7 @@ clients = db.list_clients(search=search, missing_only=missing_only)
 
 if not clients:
     st.info(
-        "No clients yet. Upload ProSeries Client Checklist PDFs from **Upload PDFs**, "
+        "No clients yet. Paste a ProSeries Client Checklist from **Paste checklist text**, "
         "or adjust your search filter."
     )
     st.stop()
